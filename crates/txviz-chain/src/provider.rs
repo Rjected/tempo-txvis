@@ -253,6 +253,7 @@ async fn get_block_ethereum(
     let block_hash = block.header.hash;
     let parent_hash = block.header.parent_hash;
     let timestamp = block.header.timestamp;
+    let beneficiary = block.header.beneficiary;
 
     let transactions: Vec<RpcTransaction> = block
         .transactions
@@ -299,6 +300,7 @@ async fn get_block_ethereum(
         hash: block_hash,
         parent_hash,
         timestamp,
+        beneficiary,
         transactions,
         receipts,
     })
@@ -323,6 +325,7 @@ async fn get_block_tempo(
     let block_hash = block.header.hash();
     let parent_hash = block.header.parent_hash();
     let timestamp = block.header.timestamp();
+    let beneficiary = block.header.beneficiary();
 
     let transactions: Vec<RpcTransaction> = block
         .transactions
@@ -407,6 +410,7 @@ async fn get_block_tempo(
         hash: block_hash,
         parent_hash,
         timestamp,
+        beneficiary,
         transactions,
         receipts,
     })

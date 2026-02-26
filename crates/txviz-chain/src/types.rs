@@ -18,6 +18,7 @@ pub struct BlockEnvelope {
     pub hash: B256,
     pub parent_hash: B256,
     pub timestamp: u64,
+    pub beneficiary: Address,
     pub transactions: Vec<RpcTransaction>,
     pub receipts: Vec<RpcReceipt>,
 }

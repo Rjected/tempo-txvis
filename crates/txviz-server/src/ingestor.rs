@@ -144,8 +144,17 @@ async fn process_block(
     }
 
     // 4. Extract state access
-    let state_accesses =
+    let mut state_accesses =
         txviz_core::trace::extract_state_access(&diff_traces, prestate_traces.as_ref())?;
+
+    // 4b. Exclude coinbase balance from write sets.
+    // Every tx credits fees to the beneficiary, creating a WAW chain through the entire block.
+    // This is not a true data dependency — fee crediting is commutative/order-independent.
+    let coinbase_balance = txviz_core::model::StateKey::Balance(block.beneficiary);
+    for acc in &mut state_accesses {
+        acc.writes.remove(&coinbase_balance);
+        acc.reads.remove(&coinbase_balance);
+    }
 
     // 5. Build dependency edges
     let mut edges = txviz_core::dag::build_dependency_edges(&tx_nodes, &state_accesses);

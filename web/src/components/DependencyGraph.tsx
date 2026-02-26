@@ -63,7 +63,12 @@ export default function DependencyGraph({ graph, onSelectTx, selectedTx }: Depen
     });
   }, []);
 
-  const nodePositions = useMemo(() => {
+  const NODE_SPACING_X = 60;
+  const NODE_SPACING_Y = 60;
+  const PADDING = 40;
+  const NODE_RADIUS = 20;
+
+  const { nodePositions, svgWidth, svgHeight } = useMemo(() => {
     const positions = new Map<number, { x: number; y: number }>();
     const levels = new Map<number, number>();
 
@@ -88,18 +93,25 @@ export default function DependencyGraph({ graph, onSelectTx, selectedTx }: Depen
     }
 
     const levelCount = Math.max(...levels.values(), 0) + 1;
+    const maxNodesInLevel = Math.max(...Array.from(byLevel.values()).map((v) => v.length), 1);
+
+    const width = Math.max(PADDING * 2 + maxNodesInLevel * NODE_SPACING_X, 400);
+    const height = Math.max(PADDING * 2 + levelCount * NODE_SPACING_Y, 300);
+
     for (const [level, txIndices] of byLevel) {
       txIndices.sort((a, b) => a - b);
       const count = txIndices.length;
+      const levelWidth = (count - 1) * NODE_SPACING_X;
+      const startX = (width - levelWidth) / 2;
       txIndices.forEach((txIndex, i) => {
         positions.set(txIndex, {
-          x: 100 + (i * 600) / Math.max(count - 1, 1),
-          y: 50 + (level * 350) / Math.max(levelCount - 1, 1),
+          x: startX + i * NODE_SPACING_X,
+          y: PADDING + level * NODE_SPACING_Y,
         });
       });
     }
 
-    return positions;
+    return { nodePositions: positions, svgWidth: width, svgHeight: height };
   }, [graph]);
 
   return (
@@ -124,7 +136,8 @@ export default function DependencyGraph({ graph, onSelectTx, selectedTx }: Depen
       </div>
 
       {/* Graph area */}
-      <svg viewBox="0 0 800 500" className="w-full rounded-lg border bg-gray-50">
+      <div className="max-h-[70vh] overflow-auto rounded-lg border bg-gray-50">
+      <svg viewBox={`0 0 ${svgWidth} ${svgHeight}`} width={svgWidth} height={svgHeight}>
         {/* Edges */}
         {graph.depEdges.map((edge, i) => {
           const from = nodePositions.get(edge.fromTx);
@@ -176,7 +189,7 @@ export default function DependencyGraph({ graph, onSelectTx, selectedTx }: Depen
               <circle
                 cx={pos.x}
                 cy={pos.y}
-                r={20}
+                r={NODE_RADIUS}
                 fill={color}
                 stroke={selectedTx === tx.txIndex ? "#f59e0b" : "#fff"}
                 strokeWidth={2}
@@ -204,6 +217,7 @@ export default function DependencyGraph({ graph, onSelectTx, selectedTx }: Depen
           );
         })}
       </svg>
+      </div>
 
       {/* Tooltip */}
       {tooltip && (
