@@ -1,0 +1,23 @@
+[package]
+name = "txviz-chain"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+txviz-core = { path = "../txviz-core" }
+alloy-primitives.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+reqwest = { version = "0.12", features = ["json"] }
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+url = "2"
+
+[dev-dependencies]
+wiremock = "0.6"
+tokio = { workspace = true, features = ["test-util"] }

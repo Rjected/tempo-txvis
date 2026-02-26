@@ -1,0 +1,23 @@
+[package]
+name = "txviz-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+txviz-core = { path = "../txviz-core" }
+txviz-chain = { path = "../txviz-chain" }
+txviz-storage = { path = "../txviz-storage" }
+txviz-api = { path = "../txviz-api" }
+alloy-primitives.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+futures.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+clap = { version = "4", features = ["derive"] }
+rust-embed = "8"
+axum = { version = "0.8", features = ["macros"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
+mime_guess = "2"

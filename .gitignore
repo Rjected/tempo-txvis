@@ -1,0 +1,12 @@
+# Rust
+/target/
+
+# Web
+/web/node_modules/
+/web/dist/
+
+# Storage
+.txviz/
+
+# OS
+.DS_Store

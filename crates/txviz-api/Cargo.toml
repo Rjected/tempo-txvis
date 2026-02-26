@@ -1,0 +1,27 @@
+[package]
+name = "txviz-api"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+txviz-core = { path = "../txviz-core" }
+txviz-chain = { path = "../txviz-chain" }
+txviz-storage = { path = "../txviz-storage" }
+alloy-primitives.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+axum = { version = "0.8", features = ["macros"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+
+[dev-dependencies]
+axum-test = "18"
+tokio = { workspace = true, features = ["test-util"] }
+tower = "0.5"
+http = "1"
+http-body-util = "0.1"
