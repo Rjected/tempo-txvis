@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use std::time::Duration;
+use tokio::sync::RwLock;
 
 use crate::detect_chain;
 use crate::types::{BlockEnvelope, ChainIdentity, NewBlockNotification, RpcReceipt, RpcTransaction};
@@ -19,11 +20,45 @@ pub trait ChainProvider: Send + Sync {
     fn subscribe_new_blocks(&self) -> BoxStream<'static, Result<NewBlockNotification>>;
 }
 
+enum ProviderInner {
+    Ethereum(alloy_provider::RootProvider<alloy_network::Ethereum>),
+    Tempo(alloy_provider::RootProvider<tempo_alloy::TempoNetwork>),
+}
+
 pub struct RpcProvider {
-    provider: alloy_provider::RootProvider,
+    inner: RwLock<ProviderInner>,
     http_url: String,
+    timeout: Duration,
     poll_interval: Duration,
     force_chain: Option<ChainKind>,
+}
+
+fn make_eth_provider(
+    http_url: &str,
+    timeout: Duration,
+) -> alloy_provider::RootProvider<alloy_network::Ethereum> {
+    let url: reqwest::Url = http_url.parse().expect("invalid RPC URL");
+    let client = reqwest::Client::builder()
+        .timeout(timeout)
+        .build()
+        .expect("failed to build HTTP client");
+    let transport = alloy_transport_http::Http::with_client(client, url);
+    let rpc_client = alloy_rpc_client::RpcClient::new(transport, false);
+    alloy_provider::RootProvider::new(rpc_client)
+}
+
+fn make_tempo_provider(
+    http_url: &str,
+    timeout: Duration,
+) -> alloy_provider::RootProvider<tempo_alloy::TempoNetwork> {
+    let url: reqwest::Url = http_url.parse().expect("invalid RPC URL");
+    let client = reqwest::Client::builder()
+        .timeout(timeout)
+        .build()
+        .expect("failed to build HTTP client");
+    let transport = alloy_transport_http::Http::with_client(client, url);
+    let rpc_client = alloy_rpc_client::RpcClient::new(transport, false);
+    alloy_provider::RootProvider::new(rpc_client)
 }
 
 impl RpcProvider {
@@ -34,17 +69,15 @@ impl RpcProvider {
         poll_interval: Duration,
         force_chain: Option<ChainKind>,
     ) -> Self {
-        let url: reqwest::Url = http_url.parse().expect("invalid RPC URL");
-        let client = reqwest::Client::builder()
-            .timeout(timeout)
-            .build()
-            .expect("failed to build HTTP client");
-        let transport = alloy_transport_http::Http::with_client(client, url);
-        let rpc_client = alloy_rpc_client::RpcClient::new(transport, false);
-        let provider = alloy_provider::RootProvider::new(rpc_client);
+        let inner = if force_chain == Some(ChainKind::Tempo) {
+            ProviderInner::Tempo(make_tempo_provider(&http_url, timeout))
+        } else {
+            ProviderInner::Ethereum(make_eth_provider(&http_url, timeout))
+        };
         Self {
-            provider,
+            inner: RwLock::new(inner),
             http_url,
+            timeout,
             poll_interval,
             force_chain,
         }
@@ -56,18 +89,31 @@ impl ChainProvider for RpcProvider {
     async fn chain_identity(&self) -> Result<ChainIdentity> {
         use alloy_provider::Provider;
 
-        let chain_id = self
-            .provider
-            .get_chain_id()
-            .await
+        let (chain_id, client_version) = {
+            let inner = self.inner.read().await;
+            let chain_id = match &*inner {
+                ProviderInner::Ethereum(p) => p.get_chain_id().await,
+                ProviderInner::Tempo(p) => p.get_chain_id().await,
+            }
             .context("failed to get chain ID")?;
 
-        let client_version = match self.provider.get_client_version().await {
-            Ok(v) => v,
-            Err(_) => "unknown".to_string(),
+            let client_version = match &*inner {
+                ProviderInner::Ethereum(p) => p.get_client_version().await,
+                ProviderInner::Tempo(p) => p.get_client_version().await,
+            }
+            .unwrap_or_else(|_| "unknown".to_string());
+
+            (chain_id, client_version)
         };
 
         let chain_kind = detect_chain(chain_id, &client_version, self.force_chain);
+
+        if chain_kind == ChainKind::Tempo {
+            let mut inner = self.inner.write().await;
+            if matches!(*inner, ProviderInner::Ethereum(_)) {
+                *inner = ProviderInner::Tempo(make_tempo_provider(&self.http_url, self.timeout));
+            }
+        }
 
         Ok(ChainIdentity {
             chain_id,
@@ -79,77 +125,20 @@ impl ChainProvider for RpcProvider {
     async fn latest_block_number(&self) -> Result<u64> {
         use alloy_provider::Provider;
 
-        self.provider
-            .get_block_number()
-            .await
-            .context("failed to get block number")
+        let inner = self.inner.read().await;
+        match &*inner {
+            ProviderInner::Ethereum(p) => p.get_block_number().await,
+            ProviderInner::Tempo(p) => p.get_block_number().await,
+        }
+        .context("failed to get block number")
     }
 
     async fn get_block(&self, number: u64) -> Result<BlockEnvelope> {
-        use alloy_network_primitives::TransactionResponse;
-        use alloy_provider::Provider;
-
-        let block = self
-            .provider
-            .get_block_by_number(alloy_eips::BlockNumberOrTag::Number(number))
-            .full()
-            .await
-            .context("failed to fetch block")?
-            .ok_or_else(|| anyhow::anyhow!("block {number} not found"))?;
-
-        let block_hash = block.header.hash;
-        let parent_hash = block.header.parent_hash;
-        let timestamp = block.header.timestamp;
-
-        let transactions: Vec<RpcTransaction> = block
-            .transactions
-            .txns()
-            .map(|tx| RpcTransaction {
-                hash: tx.tx_hash(),
-                from: tx.from(),
-                to: tx.to(),
-                tx_type: Some(format!("0x{:02x}", tx.inner.ty())),
-                nonce: Some(serde_json::json!(format!("0x{:x}", tx.inner.nonce()))),
-                gas: Some(format!("0x{:x}", tx.inner.gas_limit())),
-                value: Some(format!("0x{:x}", tx.inner.value())),
-                input: Some(format!(
-                    "0x{}",
-                    alloy_primitives::hex::encode(tx.inner.input())
-                )),
-                nonce_key: None,
-                calls: None,
-                fee_token: None,
-            })
-            .collect();
-
-        let receipts_result = self
-            .provider
-            .get_block_receipts(alloy_eips::BlockId::number(number))
-            .await
-            .context("failed to fetch block receipts")?
-            .unwrap_or_default();
-
-        let receipts: Vec<RpcReceipt> = receipts_result
-            .iter()
-            .map(|r| RpcReceipt {
-                transaction_hash: r.transaction_hash,
-                gas_used: Some(format!("0x{:x}", r.gas_used)),
-                status: Some(if r.status() {
-                    "0x1".to_string()
-                } else {
-                    "0x0".to_string()
-                }),
-            })
-            .collect();
-
-        Ok(BlockEnvelope {
-            number,
-            hash: block_hash,
-            parent_hash,
-            timestamp,
-            transactions,
-            receipts,
-        })
+        let inner = self.inner.read().await;
+        match &*inner {
+            ProviderInner::Ethereum(p) => get_block_ethereum(p, number).await,
+            ProviderInner::Tempo(p) => get_block_tempo(p, number).await,
+        }
     }
 
     async fn trace_block_prestate_diff(&self, number: u64) -> Result<serde_json::Value> {
@@ -162,11 +151,18 @@ impl ChainProvider for RpcProvider {
             disable_storage: None,
         });
 
-        let results = self
-            .provider
-            .debug_trace_block_by_number(alloy_eips::BlockNumberOrTag::Number(number), opts)
-            .await
-            .context("failed to fetch prestate diff traces")?;
+        let inner = self.inner.read().await;
+        let results = match &*inner {
+            ProviderInner::Ethereum(p) => {
+                p.debug_trace_block_by_number(alloy_eips::BlockNumberOrTag::Number(number), opts)
+                    .await
+            }
+            ProviderInner::Tempo(p) => {
+                p.debug_trace_block_by_number(alloy_eips::BlockNumberOrTag::Number(number), opts)
+                    .await
+            }
+        }
+        .context("failed to fetch prestate diff traces")?;
 
         serde_json::to_value(&results).context("failed to serialize trace results")
     }
@@ -181,11 +177,18 @@ impl ChainProvider for RpcProvider {
             disable_storage: None,
         });
 
-        let results = self
-            .provider
-            .debug_trace_block_by_number(alloy_eips::BlockNumberOrTag::Number(number), opts)
-            .await
-            .context("failed to fetch prestate traces")?;
+        let inner = self.inner.read().await;
+        let results = match &*inner {
+            ProviderInner::Ethereum(p) => {
+                p.debug_trace_block_by_number(alloy_eips::BlockNumberOrTag::Number(number), opts)
+                    .await
+            }
+            ProviderInner::Tempo(p) => {
+                p.debug_trace_block_by_number(alloy_eips::BlockNumberOrTag::Number(number), opts)
+                    .await
+            }
+        }
+        .context("failed to fetch prestate traces")?;
 
         serde_json::to_value(&results).context("failed to serialize trace results")
     }
@@ -203,7 +206,8 @@ impl ChainProvider for RpcProvider {
                     tokio::time::sleep(poll_interval).await;
 
                     let prov_url: reqwest::Url = url.parse().expect("invalid RPC URL");
-                    let prov: alloy_provider::RootProvider = alloy_provider::RootProvider::new_http(prov_url);
+                    let prov: alloy_provider::RootProvider =
+                        alloy_provider::RootProvider::new_http(prov_url);
 
                     match prov.get_block_number().await {
                         Ok(num) => {
@@ -230,6 +234,182 @@ impl ChainProvider for RpcProvider {
 
         Box::pin(stream)
     }
+}
+
+async fn get_block_ethereum(
+    provider: &alloy_provider::RootProvider<alloy_network::Ethereum>,
+    number: u64,
+) -> Result<BlockEnvelope> {
+    use alloy_network_primitives::TransactionResponse;
+    use alloy_provider::Provider;
+
+    let block = provider
+        .get_block_by_number(alloy_eips::BlockNumberOrTag::Number(number))
+        .full()
+        .await
+        .context("failed to fetch block")?
+        .ok_or_else(|| anyhow::anyhow!("block {number} not found"))?;
+
+    let block_hash = block.header.hash;
+    let parent_hash = block.header.parent_hash;
+    let timestamp = block.header.timestamp;
+
+    let transactions: Vec<RpcTransaction> = block
+        .transactions
+        .txns()
+        .map(|tx| RpcTransaction {
+            hash: tx.tx_hash(),
+            from: tx.from(),
+            to: tx.to(),
+            tx_type: Some(format!("0x{:02x}", tx.inner.ty())),
+            nonce: Some(serde_json::json!(format!("0x{:x}", tx.inner.nonce()))),
+            gas: Some(format!("0x{:x}", tx.inner.gas_limit())),
+            value: Some(format!("0x{:x}", tx.inner.value())),
+            input: Some(format!(
+                "0x{}",
+                alloy_primitives::hex::encode(tx.inner.input())
+            )),
+            nonce_key: None,
+            calls: None,
+            fee_token: None,
+        })
+        .collect();
+
+    let receipts_result = provider
+        .get_block_receipts(alloy_eips::BlockId::number(number))
+        .await
+        .context("failed to fetch block receipts")?
+        .unwrap_or_default();
+
+    let receipts: Vec<RpcReceipt> = receipts_result
+        .iter()
+        .map(|r| RpcReceipt {
+            transaction_hash: r.transaction_hash,
+            gas_used: Some(format!("0x{:x}", r.gas_used)),
+            status: Some(if r.status() {
+                "0x1".to_string()
+            } else {
+                "0x0".to_string()
+            }),
+        })
+        .collect();
+
+    Ok(BlockEnvelope {
+        number,
+        hash: block_hash,
+        parent_hash,
+        timestamp,
+        transactions,
+        receipts,
+    })
+}
+
+async fn get_block_tempo(
+    provider: &alloy_provider::RootProvider<tempo_alloy::TempoNetwork>,
+    number: u64,
+) -> Result<BlockEnvelope> {
+    use alloy_consensus::BlockHeader;
+    use alloy_network::ReceiptResponse;
+    use alloy_network_primitives::{HeaderResponse, TransactionResponse};
+    use alloy_provider::Provider;
+
+    let block = provider
+        .get_block_by_number(alloy_eips::BlockNumberOrTag::Number(number))
+        .full()
+        .await
+        .context("failed to fetch block")?
+        .ok_or_else(|| anyhow::anyhow!("block {number} not found"))?;
+
+    let block_hash = block.header.hash();
+    let parent_hash = block.header.parent_hash();
+    let timestamp = block.header.timestamp();
+
+    let transactions: Vec<RpcTransaction> = block
+        .transactions
+        .txns()
+        .map(|tx| {
+            let hash = tx.tx_hash();
+            let from = tx.from();
+            let to = tx.to();
+            let ty = tx.inner.ty();
+            let nonce_val = tx.inner.nonce();
+            let gas = tx.inner.gas_limit();
+            let value = tx.inner.value();
+            let input_data = tx.inner.input();
+
+            let (nonce_key, calls, fee_token) = match &*tx.inner {
+                tempo_primitives::TempoTxEnvelope::AA(signed) => {
+                    let tempo_tx = signed.tx();
+                    let nonce_key = Some(format!("0x{:x}", tempo_tx.nonce_key));
+                    let fee_token = tempo_tx.fee_token.map(|addr| format!("{addr:?}"));
+                    let calls: Option<Vec<serde_json::Value>> = if !tempo_tx.calls.is_empty() {
+                        Some(
+                            tempo_tx
+                                .calls
+                                .iter()
+                                .map(|call| {
+                                    serde_json::json!({
+                                        "to": format!("{:?}", call.to),
+                                        "value": format!("0x{:x}", call.value),
+                                        "input": format!("0x{}", alloy_primitives::hex::encode(&call.input)),
+                                    })
+                                })
+                                .collect(),
+                        )
+                    } else {
+                        None
+                    };
+                    (nonce_key, calls, fee_token)
+                }
+                _ => (None, None, None),
+            };
+
+            RpcTransaction {
+                hash,
+                from,
+                to,
+                tx_type: Some(format!("0x{:02x}", ty)),
+                nonce: Some(serde_json::json!(format!("0x{:x}", nonce_val))),
+                gas: Some(format!("0x{:x}", gas)),
+                value: Some(format!("0x{:x}", value)),
+                input: Some(format!(
+                    "0x{}",
+                    alloy_primitives::hex::encode(input_data)
+                )),
+                nonce_key,
+                calls,
+                fee_token,
+            }
+        })
+        .collect();
+
+    let receipts_result = provider
+        .get_block_receipts(alloy_eips::BlockId::number(number))
+        .await
+        .context("failed to fetch block receipts")?
+        .unwrap_or_default();
+
+    let receipts: Vec<RpcReceipt> = receipts_result
+        .iter()
+        .map(|r| RpcReceipt {
+            transaction_hash: r.transaction_hash(),
+            gas_used: Some(format!("0x{:x}", r.gas_used())),
+            status: Some(if r.status() {
+                "0x1".to_string()
+            } else {
+                "0x0".to_string()
+            }),
+        })
+        .collect();
+
+    Ok(BlockEnvelope {
+        number,
+        hash: block_hash,
+        parent_hash,
+        timestamp,
+        transactions,
+        receipts,
+    })
 }
 
 #[cfg(test)]
