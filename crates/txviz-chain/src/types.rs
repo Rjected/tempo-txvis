@@ -1,4 +1,4 @@
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{Address, B256};
 use serde::{Deserialize, Serialize};
 use txviz_core::model::ChainKind;
 
@@ -67,23 +67,4 @@ pub struct NewBlockNotification {
     pub hash: B256,
 }
 
-/// Prestate diff trace result for a single transaction.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PrestateDiffTrace {
-    #[serde(default)]
-    pub tx_hash: Option<B256>,
-    pub pre: serde_json::Value,
-    pub post: serde_json::Value,
-    #[serde(default)]
-    pub error: Option<String>,
-}
 
-/// Prestate (non-diff) trace result for a single transaction.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PrestateTrace {
-    #[serde(default)]
-    pub tx_hash: Option<B256>,
-    pub result: serde_json::Value,
-    #[serde(default)]
-    pub error: Option<String>,
-}

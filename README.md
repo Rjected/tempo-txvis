@@ -5,14 +5,44 @@ Transaction dependency graph visualizer for Ethereum and Tempo blocks. Shows whi
 ## Prerequisites
 
 - Rust toolchain (stable)
-- Node.js ≥ 18
-- Access to an Ethereum or Tempo node with `debug_traceBlockByNumber` enabled
+- [Bun](https://bun.sh) ≥ 1.0
+- Access to an Ethereum or Tempo node with the required RPC namespaces enabled
+
+### Required RPC Namespaces
+
+The node must expose these namespaces on the HTTP endpoint:
+
+| Namespace | Methods Used | Notes |
+|-----------|-------------|-------|
+| **eth** | `eth_chainId`, `eth_blockNumber`, `eth_getBlockByNumber`, `eth_getTransactionReceipt` | Standard, usually enabled by default |
+| **web3** | `web3_clientVersion` | Used for chain detection |
+| **debug** | `debug_traceBlockByNumber` | **Required** — uses `prestateTracer` with `diffMode`. Often disabled by default. |
+
+#### reth
+
+```bash
+reth node --http --http.api eth,web3,debug
+```
+
+#### Tempo
+
+```bash
+tempo --http --http.api eth,web3,debug
+```
+
+#### Geth
+
+```bash
+geth --http --http.api eth,web3,debug
+```
+
+> **Note:** The `debug` namespace is compute-heavy and typically disabled on public RPC providers. You need your own node.
 
 ## Build
 
 ```bash
 # Install frontend dependencies and build
-cd web && npm install && npm run build && cd ..
+cd web && bun install && bun run build && cd ..
 
 # Build the server (embeds the frontend)
 cargo build -p txviz-server --release
@@ -59,7 +89,7 @@ cargo run -p txviz-server -- \
   --ui-proxy http://localhost:5173
 
 # In another terminal, start the Vite dev server
-cd web && npm run dev
+cd web && bun run dev
 ```
 
 ## Tests
@@ -69,7 +99,7 @@ cd web && npm run dev
 cargo test --workspace
 
 # Frontend tests
-cd web && npx vitest run
+cd web && bun run test
 ```
 
 ## CLI Reference

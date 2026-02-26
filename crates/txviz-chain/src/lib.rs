@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 pub mod adapter;
 pub mod provider;
 pub mod stream;
@@ -19,7 +21,7 @@ pub fn detect_chain(chain_id: u64, client_version: &str, force: Option<ChainKind
         return forced;
     }
     match chain_id {
-        42431 => ChainKind::Tempo,
+        4217 | 42431 => ChainKind::Tempo,
         _ => {
             if client_version.to_lowercase().contains("tempo") {
                 ChainKind::Tempo

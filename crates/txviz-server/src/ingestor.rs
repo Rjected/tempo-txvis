@@ -115,7 +115,7 @@ async fn process_block(
         Ok(t) => t,
         Err(e) => {
             warn!(block = n, error = %e, "failed to fetch diff traces, skipping trace analysis");
-            Vec::new()
+            serde_json::json!([])
         }
     };
 
@@ -144,13 +144,8 @@ async fn process_block(
     }
 
     // 4. Extract state access
-    let diff_json = serde_json::to_value(&diff_traces)?;
-    let prestate_json = prestate_traces
-        .as_ref()
-        .map(|t| serde_json::to_value(t))
-        .transpose()?;
     let state_accesses =
-        txviz_core::trace::extract_state_access(&diff_json, prestate_json.as_ref())?;
+        txviz_core::trace::extract_state_access(&diff_traces, prestate_traces.as_ref())?;
 
     // 5. Build dependency edges
     let mut edges = txviz_core::dag::build_dependency_edges(&tx_nodes, &state_accesses);
